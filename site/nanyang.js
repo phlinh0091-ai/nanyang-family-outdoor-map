@@ -36,52 +36,53 @@ function locate(){
  const button=$('#locate'),status=$('#status');
  button.disabled=true;
  status.textContent='正在请求设备位置…';
- let settled=false,browserStarted=false,amapTimer=0,browserTimer=0;
- const clearTimers=()=>{clearTimeout(amapTimer);clearTimeout(browserTimer);};
+ let settled=false,fallbackStarted=false,browserTimer=0,amapTimer=0;
+ const clearTimers=()=>{clearTimeout(browserTimer);clearTimeout(amapTimer);};
  const finish=()=>{if(settled)return false;settled=true;clearTimers();button.disabled=false;return true;};
  const fail=message=>{if(!finish())return;status.textContent=message;};
  const succeed=(point,label,message)=>{if(!finish())return;setOrigin(point,label);status.textContent=message;};
- const diagnostic=reason=>reason?' 高德诊断：'+reason:'';
- const startBrowserFallback=reason=>{
-  if(settled||browserStarted)return;
-  browserStarted=true;
-  clearTimeout(amapTimer);
-  status.textContent='高德定位未响应，正在尝试浏览器定位…';
-  if(!navigator.geolocation){fail('当前浏览器未提供定位接口。请检查系统位置服务，或用“地图上选出发位置”。'+diagnostic(reason));return;}
-  browserTimer=setTimeout(()=>fail('手机浏览器未返回定位结果，请检查网站定位权限和系统定位服务后重试。'+diagnostic(reason)),18000);
+ const amapFallback=reason=>{
+  if(settled||fallbackStarted)return;
+  fallbackStarted=true;
+  clearTimeout(browserTimer);
+  status.textContent='手机定位暂不可用，正在尝试高德定位…';
+  amapTimer=setTimeout(()=>fail('定位等待超时，请检查网站定位权限和系统定位服务后重试。'+(reason?' 定位提示：'+reason:'')),10000);
   try{
-   navigator.geolocation.getCurrentPosition(pos=>{
+   AMap.plugin('AMap.Geolocation',()=>{
     if(settled)return;
-    clearTimeout(browserTimer);
-    status.textContent='已取得设备位置，正在本地转换地图坐标…';
     try{
-     const point=wgs84ToGcj02(pos.coords.longitude,pos.coords.latitude);
-     const accuracy=pos.coords.accuracy;
-     const message=Number.isFinite(accuracy)&&accuracy>0?'设备定位成功，估算误差约 '+Math.round(accuracy)+' 米。':'设备定位成功，已本地转换为地图坐标。';
-     succeed(point,'设备当前位置',message);
-    }catch(error){fail('设备位置已取得，但本地坐标转换失败，请重试。');}
-   },error=>{
-    const messages={1:'位置权限被拒绝，请在浏览器和系统设置中允许此网站定位。',2:'设备或浏览器未能提供位置，请检查系统定位服务与网络。',3:'设备定位超时，请重试或手动选点。'};
-    fail((messages[error?.code]||'设备定位失败。')+diagnostic(reason));
-   },{enableHighAccuracy:true,timeout:15000,maximumAge:0});
-  }catch(error){fail('浏览器定位启动失败，请检查网站和系统定位权限后重试。'+diagnostic(reason));}
+     const geolocation=new AMap.Geolocation({enableHighAccuracy:true,timeout:9000,convert:true,noIpLocate:2});
+     geolocation.getCurrentPosition((state,r)=>{
+      if(settled)return;
+      if(state==='complete'&&r?.position){
+       const message=r.accuracy?'定位成功，估算误差约 '+Math.round(r.accuracy)+' 米。':(r.location_type||'定位成功')+'；服务未提供精度数据，位置可能有偏差。';
+       succeed({lng:r.position.lng,lat:r.position.lat},'我的当前位置',message);
+      }else fail('手机与高德都未能返回位置，请检查系统定位服务。'+(reason?' 定位提示：'+reason:''));
+     });
+    }catch(error){fail('高德定位启动失败，请检查网络后重试。');}
+   });
+  }catch(error){fail('定位服务启动失败，请检查网络和系统定位设置。');}
  };
- amapTimer=setTimeout(()=>startBrowserFallback('高德定位等待超时'),12000);
+ if(!navigator.geolocation){amapFallback('当前浏览器未提供设备定位接口');return;}
+ browserTimer=setTimeout(()=>amapFallback('手机定位等待超时'),12000);
  try{
-  AMap.plugin('AMap.Geolocation',()=>{
-   if(settled||browserStarted)return;
+  navigator.geolocation.getCurrentPosition(pos=>{
+   if(settled)return;
+   clearTimeout(browserTimer);
    try{
-    const geolocation=new AMap.Geolocation({enableHighAccuracy:true,timeout:12000,convert:true,noIpLocate:2});
-    geolocation.getCurrentPosition((state,r)=>{
-     if(settled)return;
-     if(state==='complete'&&r?.position){
-      const message=r.accuracy?'定位成功，估算误差约 '+Math.round(r.accuracy)+' 米。':(r.location_type||'定位成功')+'；服务未提供精度数据，位置可能有偏差。请对照地图或点“地图上选出发位置”修正。';
-      succeed({lng:r.position.lng,lat:r.position.lat},'我的当前位置',message);
-     }else startBrowserFallback(String(r?.message||r?.info||'高德定位未成功'));
-    });
-   }catch(error){startBrowserFallback('高德定位启动失败');}
-  });
- }catch(error){startBrowserFallback('高德定位启动失败');}
+    const point=wgs84ToGcj02(pos.coords.longitude,pos.coords.latitude);
+    const accuracy=pos.coords.accuracy;
+    const message=Number.isFinite(accuracy)&&accuracy>0?'设备定位成功，估算误差约 '+Math.round(accuracy)+' 米。':'设备定位成功，已转换为地图坐标。';
+    succeed(point,'设备当前位置',message);
+   }catch(error){fail('设备位置已取得，但本地坐标处理失败，请重试。');}
+  },error=>{
+   if(settled)return;
+   clearTimeout(browserTimer);
+   if(error?.code===1){fail('位置权限被拒绝，请在浏览器和系统设置中允许此网站定位。');return;}
+   const messages={2:'设备未能提供位置',3:'手机定位超时'};
+   amapFallback(messages[error?.code]||'手机定位失败');
+  },{enableHighAccuracy:true,timeout:12000,maximumAge:30000});
+ }catch(error){amapFallback('手机定位启动失败');}
 }
 $('#locate').onclick=locate;$('#pick').onclick=()=>{if(!ready)return;picking=!picking;$('#pick').textContent=picking?'请点击地图上的出发位置':'地图上选出发位置';$('#status').textContent=picking?'点击地图空白处设置出发位置。':'已取消选择。';};$('#radius').onchange=render;$('#query').oninput=render;$('#list').onclick=e=>{const b=e.target.closest('[data-place]');if(b)openPlace(b.dataset.place);};$('#close-detail').onclick=()=>$('#detail').close();document.addEventListener('footprint-select',e=>openPlace(e.detail.name));
 (async()=>{places=await(await fetch('places.json',{cache:'no-store'})).json();render();const config=window.NANYANG_MAP_CONFIG||{},key=config.amapKey||localStorage.getItem('amapKey')||'',serviceHost=config.serviceHost||localStorage.getItem('amapServiceHost')||'';if(!key||!serviceHost){$('#status').textContent='地图服务尚未配置：需要受域名限制的高德 JS API Key 和服务端代理地址；不要把 securityJsCode 填进网页。';return;}window._AMapSecurityConfig={serviceHost};const script=document.createElement('script');script.src='https://webapi.amap.com/maps?'+new URLSearchParams({v:'2.0',key});await new Promise((ok,no)=>{script.onload=ok;script.onerror=no;document.head.append(script)});const el=document.createElement('div');el.className='footprint-map';el.dataset.detailMode='external';const data=rows(visible());if(!data.length)data.push({name:'南阳浏览中心',coordinates:'112.5283,32.9908'});const url=URL.createObjectURL(new Blob([JSON.stringify(data)],{type:'application/json'}));el.dataset.json=url;el.dataset.amapKey=key;$('#map').replaceChildren(el);mapUI=await FootprintMap.bootstrapMap(el);URL.revokeObjectURL(url);if(!mapUI)throw Error('map');mapUI.onPick(p=>{if(picking)setOrigin(p,'地图选定的出发位置')});mapUI.update([]);mapUI.center([112.56,33.0],12);ready=true;$('#status').textContent=`地图已就绪：已收录 ${places.length} 条材料，其中 ${places.filter(p=>p.mapMatch).length} 个地点可在地图浏览。点击“定位我，找附近”后才会请求设备位置。`;})().catch(error=>{console.error(error.message);$('#status').textContent='地图服务加载失败，地点材料仍可查看，请检查网络或地图配置。'});
