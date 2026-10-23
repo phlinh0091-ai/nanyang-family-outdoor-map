@@ -1,0 +1,10 @@
+name = "nanyang-amap-proxy"
+main = "src/index.js"
+compatibility_date = "2026-10-23"
+workers_dev = true
+
+[vars]
+ALLOWED_ORIGIN = "https://phlinh0091-ai.github.io"
+# Set this to the JS API key only if you want the Worker to reject mismatching key parameters.
+# This is not a secret; the browser already receives this key.
+AMAP_JS_API_KEY = ""
