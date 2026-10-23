@@ -1,6 +1,31 @@
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let places=[],origin=null,mapUI=null,picking=false,ready=false,originLabel='我的位置';
 const navigation=p=>'https://uri.amap.com/marker?'+new URLSearchParams({position:`${p.mapMatch.lng},${p.mapMatch.lat}`,name:p.name,coordinate:'gaode',callnative:'1',src:'nanyang-family'});
+function wgs84ToGcj02(longitude,latitude){
+ const lng=Number(longitude),lat=Number(latitude);
+ if(!Number.isFinite(lng)||!Number.isFinite(lat))throw new Error('Invalid device coordinates');
+ if(lng<72.004||lng>137.8347||lat<0.8293||lat>55.8271)return{lng,lat};
+ const pi=Math.PI,axis=6378245.0,eccentricity=0.00669342162296594323;
+ const transformLat=(x,y)=>{
+  let value=-100+2*x+3*y+0.2*y*y+0.1*x*y+0.2*Math.sqrt(Math.abs(x));
+  value+=(20*Math.sin(6*x*pi)+20*Math.sin(2*x*pi))*2/3;
+  value+=(20*Math.sin(y*pi)+40*Math.sin(y/3*pi))*2/3;
+  value+=(160*Math.sin(y/12*pi)+320*Math.sin(y*pi/30))*2/3;
+  return value;
+ };
+ const transformLng=(x,y)=>{
+  let value=300+x+2*y+0.1*x*x+0.1*x*y+0.1*Math.sqrt(Math.abs(x));
+  value+=(20*Math.sin(6*x*pi)+20*Math.sin(2*x*pi))*2/3;
+  value+=(20*Math.sin(x*pi)+40*Math.sin(x/3*pi))*2/3;
+  value+=(150*Math.sin(x/12*pi)+300*Math.sin(x/30*pi))*2/3;
+  return value;
+ };
+ let dLat=transformLat(lng-105,lat-35),dLng=transformLng(lng-105,lat-35);
+ const radLat=lat/180*pi,sinLat=Math.sin(radLat),magic=1-eccentricity*sinLat*sinLat,sqrtMagic=Math.sqrt(magic);
+ dLat=dLat*180/((axis*(1-eccentricity)/(magic*sqrtMagic))*pi);
+ dLng=dLng*180/(axis/sqrtMagic*Math.cos(radLat)*pi);
+ return{lng:lng+dLng,lat:lat+dLat};
+}
 function visible(){return !origin?[]:Nearby.select(places,origin,Number($('#radius').value),$('#query').value.trim());}
 function rows(list){const result=list.map(p=>({name:p.name,coordinates:`${p.mapMatch.lng},${p.mapMatch.lat}`,description:`${p.mapMatch.address}\n${p.fee}\n${p.description}`,photos:p.photos,categories:['户外游玩'],url:navigation(p),urlLabel:'去这里 · 手机导航'}));return result;}
 function openPlace(name){const p=visible().find(p=>p.name===name);if(!p)return;$('#detail-body').innerHTML=`<article><h3>${esc(p.name)}</h3><p>${esc(p.mapMatch.address)}</p><p>直线 ${p.distance.toFixed(1)} 公里</p><div class="photos">${p.photos.slice(0,8).map(u=>`<a href="${esc(u)}" target="_blank" rel="noreferrer"><img src="${esc(u)}" referrerpolicy="no-referrer" alt="${esc(p.name)}环境照片"></a>`).join('')}</div><p>${esc(p.fee)}</p><details><summary>玩法与博主描述</summary><pre>${esc(p.description)}</pre>${p.sources.map((u,i)=>`<a href="${esc(u)}" target="_blank" rel="noreferrer">原笔记${i+1}</a>`).join(' · ')}</details><p><a class="nav" href="${esc(navigation(p))}" target="_blank" rel="noopener">在高德打开此地点</a></p><small>打开地点后，可在高德选择“到这里”开始导航。</small></article>`;$('#detail').showModal();}
@@ -11,8 +36,8 @@ function locate(){
  const button=$('#locate'),status=$('#status');
  button.disabled=true;
  status.textContent='正在请求设备位置…';
- let settled=false,browserStarted=false,amapTimer=0,browserTimer=0,convertTimer=0;
- const clearTimers=()=>{clearTimeout(amapTimer);clearTimeout(browserTimer);clearTimeout(convertTimer);};
+ let settled=false,browserStarted=false,amapTimer=0,browserTimer=0;
+ const clearTimers=()=>{clearTimeout(amapTimer);clearTimeout(browserTimer);};
  const finish=()=>{if(settled)return false;settled=true;clearTimers();button.disabled=false;return true;};
  const fail=message=>{if(!finish())return;status.textContent=message;};
  const succeed=(point,label,message)=>{if(!finish())return;setOrigin(point,label);status.textContent=message;};
@@ -28,19 +53,13 @@ function locate(){
    navigator.geolocation.getCurrentPosition(pos=>{
     if(settled)return;
     clearTimeout(browserTimer);
-    status.textContent='已取得设备位置，正在转换地图坐标…';
-    convertTimer=setTimeout(()=>fail('已取得设备位置，但地图坐标转换超时，请检查网络后重试。'),10000);
+    status.textContent='已取得设备位置，正在本地转换地图坐标…';
     try{
-     AMap.convertFrom([pos.coords.longitude,pos.coords.latitude],'gps',(state,result)=>{
-      if(settled)return;
-      clearTimeout(convertTimer);
-      if(state==='complete'&&result.locations?.length){
-       const accuracy=pos.coords.accuracy;
-       const message=Number.isFinite(accuracy)&&accuracy>0?'设备定位成功，估算误差约 '+Math.round(accuracy)+' 米。':'设备定位成功，已转换为地图坐标。';
-       succeed({lng:result.locations[0].lng,lat:result.locations[0].lat},'设备当前位置',message);
-      }else fail('已取得设备位置，但地图坐标转换失败，请检查网络与代理配置后重试。');
-     });
-    }catch(error){fail('地图坐标转换请求启动失败，请检查网络后重试。');}
+     const point=wgs84ToGcj02(pos.coords.longitude,pos.coords.latitude);
+     const accuracy=pos.coords.accuracy;
+     const message=Number.isFinite(accuracy)&&accuracy>0?'设备定位成功，估算误差约 '+Math.round(accuracy)+' 米。':'设备定位成功，已本地转换为地图坐标。';
+     succeed(point,'设备当前位置',message);
+    }catch(error){fail('设备位置已取得，但本地坐标转换失败，请重试。');}
    },error=>{
     const messages={1:'位置权限被拒绝，请在浏览器和系统设置中允许此网站定位。',2:'设备或浏览器未能提供位置，请检查系统定位服务与网络。',3:'设备定位超时，请重试或手动选点。'};
     fail((messages[error?.code]||'设备定位失败。')+diagnostic(reason));
